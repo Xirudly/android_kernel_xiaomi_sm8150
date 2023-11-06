@@ -26,6 +26,7 @@ fw-shipped-$(CONFIG_TOUCHSCREEN_NT36xxx_HOSTDL_SPI) += j20s_novatek_ts_fw01.bin
 fw-shipped-$(CONFIG_TOUCHSCREEN_NT36xxx_HOSTDL_SPI) += j20s_novatek_ts_mp01.bin
 fw-shipped-$(CONFIG_TOUCHSCREEN_NT36xxx_HOSTDL_SPI) += j20s_novatek_ts_fw02.bin
 fw-shipped-$(CONFIG_TOUCHSCREEN_NT36xxx_HOSTDL_SPI) += j20s_novatek_ts_mp02.bin
+fw-shipped-$(CONFIG_TOUCHSCREEN_ST_FTS_V521) += st_fts_f1.ftb st_fts.ftb st_fts_e5.ftb st_fts_f1x.ftb
 fw-shipped-$(CONFIG_TOUCHSCREEN_GOODIX_GTX8) += goodix_gt9886_cfg_f11.bin goodix_gt9886_fw_f11.bin
 
 quiet_cmd_ihex  = IHEX    $@
