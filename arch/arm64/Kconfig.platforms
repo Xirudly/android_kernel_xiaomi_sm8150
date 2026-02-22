@@ -428,6 +428,12 @@ config MACH_XIAOMI_VAYU
 	help
 	  Support for POCO X3 Pro
 
+config MACH_XIAOMI_CEPHEUS
+	bool "Xiaomi cepheus board"
+	select MACH_XIAOMI_SM8150
+	help
+	  Support for Mi 9
+
 config MACH_XIAOMI_RAPHAEL
 	bool "Xiaomi raphael board"
 	select MACH_XIAOMI_SM8150
