@@ -1,0 +1,191 @@
+name: Build Kernel
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          swap-size-mb: 4096
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates cpio curl \
+            flex git kmod libelf-dev libssl-dev lld llvm \
+            make perl python3 tar xz-utils zip zlib1g-dev
+
+      - name: Download Clang toolchain
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/toolchain/clang
+          # Try ZyCromerZ Clang (reliable mirror)
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/20.0.0git-20250104-release/Clang-20.0.0git-20250104.tar.gz -O /tmp/clang.tar.gz || \
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240510-release/Clang-19.0.0git-20240510.tar.gz -O /tmp/clang.tar.gz
+          tar -xf /tmp/clang.tar.gz -C $GITHUB_WORKSPACE/toolchain/clang
+          rm -f /tmp/clang.tar.gz
+          # Verify clang is working
+          $GITHUB_WORKSPACE/toolchain/clang/bin/clang --version
+
+      - name: Download GCC cross-compiler
+        run: |
+          # aarch64 GCC
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 $GITHUB_WORKSPACE/toolchain/gcc-arm64
+          # arm32 GCC (for vDSO/compat)
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 $GITHUB_WORKSPACE/toolchain/gcc-arm32
+
+      - name: Generate defconfig
+        run: |
+          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          # Merge base defconfig with vendor fragments
+          scripts/kconfig/merge_config.sh -m \
+            arch/arm64/configs/vendor/sm8150-qgki_defconfig \
+            arch/arm64/configs/vendor/xiaomi/sm8150-common.config \
+            arch/arm64/configs/vendor/xiaomi/cepheus.config
+
+          mv .config arch/arm64/configs/cepheus_merged_defconfig
+
+          make O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=$GITHUB_WORKSPACE/toolchain/gcc-arm64/bin/aarch64-linux-android- \
+            CROSS_COMPILE_COMPAT=$GITHUB_WORKSPACE/toolchain/gcc-arm32/bin/arm-linux-androideabi- \
+            cepheus_merged_defconfig
+
+      - name: Build kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          make -j$(nproc) O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=$GITHUB_WORKSPACE/toolchain/gcc-arm64/bin/aarch64-linux-android- \
+            CROSS_COMPILE_COMPAT=$GITHUB_WORKSPACE/toolchain/gcc-arm32/bin/arm-linux-androideabi- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            Image dtbs 2>&1 | tee build.log
+
+      - name: Package with AnyKernel3
+        run: |
+          # Clone AnyKernel3
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 $GITHUB_WORKSPACE/AnyKernel3
+          cd $GITHUB_WORKSPACE/AnyKernel3
+
+          # Clean up example files
+          rm -rf modules patch ramdisk
+          rm -f README.md
+
+          # Configure AnyKernel3 for cepheus (Mi 9)
+          cat > anykernel.sh << 'EOF'
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+
+          properties() { '
+          kernel.string=Custom Kernel for Xiaomi Cepheus (Mi 9)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=cepheus
+          device.name2=Mi 9
+          supported.versions=
+          supported.patchlevels=
+          '; }
+
+          # shell variables
+          block=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=0;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+
+          . tools/ak3-core.sh;
+
+          set_perm_recursive 0 0 755 644 $ramdisk/*;
+          dump_boot;
+
+          write_boot;
+          EOF
+
+          # Copy kernel Image
+          if [ -f $GITHUB_WORKSPACE/out/arch/arm64/boot/Image ]; then
+            cp $GITHUB_WORKSPACE/out/arch/arm64/boot/Image .
+          elif [ -f $GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz ]; then
+            cp $GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz .
+          fi
+
+          # Copy DTB files
+          mkdir -p dtb
+          find $GITHUB_WORKSPACE/out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null | while read dtb; do
+            cp "$dtb" dtb/
+          done
+          # If concatenated dtb exists
+          if [ -f $GITHUB_WORKSPACE/out/arch/arm64/boot/dtb ]; then
+            cp $GITHUB_WORKSPACE/out/arch/arm64/boot/dtb .
+          fi
+
+          # Create flashable zip
+          zip -r9 $GITHUB_WORKSPACE/AnyKernel3-cepheus-sm8150.zip * -x .git .gitignore README.md
+
+      - name: Prepare raw artifacts
+        run: |
+          mkdir -p artifact
+          if [ -f out/arch/arm64/boot/Image ]; then
+            cp out/arch/arm64/boot/Image artifact/
+          fi
+          if [ -f out/arch/arm64/boot/Image.gz ]; then
+            cp out/arch/arm64/boot/Image.gz artifact/
+          fi
+          find out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null | head -20 | while read dtb; do
+            cp "$dtb" artifact/
+          done
+          if [ -f out/arch/arm64/boot/dtb ]; then
+            cp out/arch/arm64/boot/dtb artifact/
+          fi
+          echo "=== Raw artifacts ==="
+          ls -la artifact/
+
+      - name: Upload AnyKernel3 flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyKernel3-cepheus-sm8150
+          path: AnyKernel3-cepheus-sm8150.zip
+          if-no-files-found: error
+
+      - name: Upload raw kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-cepheus-sm8150-raw
+          path: artifact/*
+          if-no-files-found: error
+
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
